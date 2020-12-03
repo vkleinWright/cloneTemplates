@@ -1,5 +1,6 @@
 #
-#                              --- version 2.3 ----
+#                              --- version 3.1 ----
+#                              - supports Jenkins -
 #
 #-------------------------------------------------------------------------------------------
 # --- Libraries ----------------------------------------------- Edit for this Project ------
@@ -35,7 +36,22 @@ SHELL=/QOpenSys/usr/bin/qsh
 # Compile option for easy debugging
 DBGVIEW=*SOURCE
 
+REPO_TEXT=$(BUILD_TAG)-$(GIT_BRANCH):$(BUILD_NUMBER)
 
+#--------------------------------------------------------------------
+# Make allowances for USRWRT on test and USRWRT400 on production
+
+SYS := $(shell hostname)
+
+ifeq ($(SYS), WTSBLADE.WRIGHTTREE.COM) 
+   ifeq ($(BINLIB), USRWRT400)
+      BINLIB=USRWRT
+      FILELIB=USRFWRT
+   endif
+endif
+
+
+#--------------------------------------------------------------------
 # Fill variable BASELIBS - it will be used to add these to the library list
 # Note: If your base libraries are not WSCFIL and WSCLIB, you will probably want to  
 #       hard code them in your liblist below.
@@ -46,46 +62,95 @@ else
 endif
 
 
-# Flag indicating dev or prod build
-# variable for comparison
-BUILD_METHOD=PROD 
+#--------------------------------------------------------------------
+# set the switch for searchpath
+
+ifeq ($(GIT_BRANCH),origin/dev)
+    STAGE=DEV
+elseifeq ($(GIT_BRANCH),origin/test)
+    STAGE=TEST
+else 
+    STAGE=MASTER
+endif
+
+
+
+#--------------------------------------------------------------------
+# set the developer libraries if needed
 
 # get your user name in all caps
 USER_UPPER := $(shell echo $(USER) | tr a-z A-Z)
 
+ifeq ($(strip $(GIT_BRANCH)),)
 
-# If your user name is in the path, we're assuming this is not 
-# going to build in the main libraries
-ifeq ($(USER_UPPER), $(findstring $(USER_UPPER),$(CURDIR)))
-# so override with the BINLIB and FILELIB in binlib.inc in your home directory
-    include  ~/binlib.inc
+  # If your user name is in the path, we're assuming this is not 
+  # going to build in the main libraries
+  ifeq ($(USER_UPPER), $(findstring $(USER_UPPER),$(CURDIR)))
+  # so override with the BINLIB and FILELIB in binlib.inc in your home directory
+      include  ~/binlib.inc
+	  
+	  # re-set the switch for searchpath
+      STAGE=DEVELOPER
 	
-    BUILD_METHOD=DEV
-	
-# and fill variable ADDLIBS with the overridden values to add these to the library list
-   ifeq ($(FILELIB), $(BINLIB))
-      ADDLIBS:=$(FILELIB)
-   else
-      ADDLIBS:=$(FILELIB) $(BINLIB)
-   endif
+  # and fill variable ADDLIBS with the overridden values to add these to the library list
+     ifeq ($(FILELIB), $(BINLIB))
+        ADDLIBS:=$(FILELIB)
+     else
+        ADDLIBS:=$(FILELIB) $(BINLIB)
+     endif
+  # and put the path in the text
+  REPO_TEXT:= '$(shell pwd)'
+  endif
 
 endif
 
+#--------------------------------------------------------------------
+# add the override libraries to the library list
+ifneq ($(strip $(OVRFILE)$(OVRBIN)),)
+    ifneq ($(strip $(OVRFILE)),)
+        FILELIB=$(OVRFILE)
+    endif
+
+    ifneq ($(strip $(OVRBIN)),)
+        BINLIB=$(OVRBIN)
+    endif
+    ifeq ($(OVRFILE), $(OVRBIN))
+        ADDLIBS:=$(OVRFILE)
+     else
+        ADDLIBS:=$(OVRFILE) $(OVRBIN)
+     endif
+endif
+#--------------------------------------------------------------------
+
 # Finalize the library list
-LIBLIST += $(CNXLIB) $(BASELIBS) $(ADDLIBS) 
+LIBLIST += $(CNXLIB) $(BASELIBS) $(ADDLIBS)
 
 #path for source
 VPATH = source:header
 
-
-# build the repository search path to be used in compiles
+#--------------------------------------------------------------------
+# build the repository search path to be used in RPG compiles
 SEARCHPATH = ''$(CURDIR)'' 
 
-ifeq ($(BUILD_METHOD), DEV)
-    SEARCHPATH += $(foreach repo,$(REPOLIST), ''$(dir $(CURDIR))$(repo)'' ''/wright-service-corp/$(repo)'' )
+#WORKSPACE = /home/WSCOWNER/.jenkins/workspace/
+
+# If we are working in our own library
+ifeq ($(STAGE),DEVELOPMENT)
+    SEARCHPATH += $(foreach repo,$(REPOLIST),  ''$(dir $(CURDIR))$(repo)'' ''$(WORKSPACE)$(repo)-test'' ''$(WORKSPACE)$(repo)-master'' ''/wright-service-corp/$(repo)'' )
+	
+#If we are working in Jenkins dev
+else ifeq ($(STAGE),DEV)
+        SEARCHPATH += $(foreach repo,$(REPOLIST), ''$(WORKSPACE)$(repo)-dev'', ''$(WORKSPACE)$(repo)-test'' ''$(WORKSPACE)$(repo)-master'' ''/wright-service-corp/$(repo)'' )
+		
+#If we are working in Jenkins test
+else ifeq ($(STAGE),TEST)
+        SEARCHPATH += $(foreach repo,$(REPOLIST), ''$(WORKSPACE)$(repo)-test'' ''$(WORKSPACE)$(repo)-master'' ''/wright-service-corp/$(repo)'' )
+	
 else
-    SEARCHPATH += $(foreach repo,$(REPOLIST), ''/wright-service-corp/$(repo)'' )
+    #If we are working Jenkins master or wright-service-corp
+        SEARCHPATH += $(foreach repo,$(REPOLIST), ''$(WORKSPACE)$(repo)-master'' ''/wright-service-corp/$(repo)'' )
 endif
+#--------------------------------------------------------------------
 
 
 
@@ -96,13 +161,14 @@ endif
 
 # list of objects for your binding directory (format: pgmname_BNDDIRLIST)
 testing_BNDDIRLIST = testing.entrymod logerrors.entrysrv
-empclshst_BNDDIRLIST = empclshst.entrymod logerrors.entrysrv  
+empclshst_BNDDIRLIST = empclshst.entrymod logerrors.entrysrv 
+logerrors_BNDDIRLIST = logerrors.entrymod 
 
 
 
 
 # everything you want to build here
-all: test.rpglepgm logerrors.srvpgm 
+all: logerrors.srvpgm 
 #all: empoccchg.sqlobj uclxref.sqlobj return_employee_occupation_description.sqlobj empclshst.pgm unxrefcnx.cnxpgm
 
 
@@ -143,6 +209,7 @@ logerrors.rpgmod: logerrors.sqlrpgle
 	liblist -a $(LIBLIST);\
 	system "CRTSQLRPGI OBJ($(BINLIB)/$*) SRCSTMF('./source/$*.sqlrpgle') \
 	COMMIT(*NONE) OBJTYPE(*MODULE) OPTION(*EVENTF) REPLACE(*YES) DBGVIEW($(DBGVIEW)) \
+	TEXT($(REPO_TEXT)) \
 	compileopt('INCDIR($(SEARCHPATH))')" 
 	@touch $@
 
@@ -151,6 +218,7 @@ logerrors.rpgmod: logerrors.sqlrpgle
 	liblist -a $(LIBLIST);\
 	system "CRTSQLRPGI OBJ($(BINLIB)/$*) SRCSTMF('./source/$*.sqlrpgle') \
 	COMMIT(*NONE) OBJTYPE(*PGM) OPTION(*EVENTF) REPLACE(*YES) DBGVIEW($(DBGVIEW)) \
+	TEXT($(REPO_TEXT)) \
 	compileopt('INCDIR( $(SEARCHPATH))')"; 
 	@touch $@
 
@@ -160,6 +228,7 @@ logerrors.rpgmod: logerrors.sqlrpgle
 	system "CRTSQLRPGI OBJ($(BINLIB)/$*) SRCSTMF('./source/$*.sqlrpgle') \
 	COMMIT(*NONE) OBJTYPE(*MODULE) OPTION(*EVENTF) REPLACE(*YES) DBGVIEW($(DBGVIEW)) \
 	RPGPPOPT(*LVL2) \
+	TEXT($(REPO_TEXT)) \
 	compileopt('INCDIR( $(SEARCHPATH))')";
 	@touch $@
 
@@ -169,6 +238,7 @@ logerrors.rpgmod: logerrors.sqlrpgle
 	system "CRTSQLRPGI OBJ($(BINLIB)/$*) SRCSTMF('./source/$*.sqlrpgle') \
 	COMMIT(*NONE) OBJTYPE(*PGM) OPTION(*EVENTF) REPLACE(*YES) DBGVIEW($(DBGVIEW)) \
 	RPGPPOPT(*LVL2) \
+	TEXT($(REPO_TEXT)) \
 	compileopt('INCDIR( $(SEARCHPATH))')";
 	@touch $@
 
@@ -216,7 +286,7 @@ logerrors.rpgmod: logerrors.sqlrpgle
 	-system -q "CRTSRCPF FILE($(BINLIB)/QDDSSRC) RCDLEN(112)"
 	system "CPYFRMSTMF FROMSTMF('./source/$*.prtf') TOMBR('/QSYS.lib/$(BINLIB).lib/QDDSSRC.file/$*.mbr') MBROPT(*replace)"
 	system "CHGPFM FILE($(BINLIB)/QCLLESRC) MBR($*) SRCTYPE(PRTF)"
-	system "CRTPRTF FILE($(BINLIB)/$*) SRCFILE($(BINLIB)/QDDSSRC) SRCMBR($*)"
+	system "CRTPRTF FILE($(BINLIB)/$*) SRCFILE($(BINLIB)/QDDSSRC) SRCMBR($*) TEXT($(REPO_TEXT))"
 	@touch $@
 
 
@@ -228,6 +298,24 @@ logerrors.rpgmod: logerrors.sqlrpgle
 	-system -q "ADDBNDDIRE BNDDIR($(BINLIB)/$*) OBJ($(patsubst %.entrysrv,(*LIBL/% *SRVPGM *IMMED), $(patsubst %.entrymod,(*LIBL/% *MODULE *IMMED),$($*_BNDDIRLIST))))";\
 	liblist -a $(LIBLIST);\
 	system "CRTSRVPGM SRVPGM($(BINLIB)/$*) BNDDIR($(BINLIB)/$*) SRCFILE($(BINLIB)/QSRC)"
+	@touch $@
+
+
+%.pffile: %.pf
+	-system -q "CRTSRCPF FILE($(BINLIB)/QDDSSRC) RCDLEN(112)"
+	system "CPYFRMSTMF FROMSTMF('./source/$*.pf') TOMBR('/QSYS.lib/$(BINLIB).lib/QDDSSRC.file/$*.mbr') MBROPT(*replace)"
+	system "CHGPFM FILE($(BINLIB)/QDDSSRC) MBR($*) SRCTYPE(PF)"
+	liblist -a $(LIBLIST);\
+	system "CRTPF FILE($(BINLIB)/$*) SRCFILE($(BINLIB)/QDDSSRC) SRCMBR($*) LVLCHK(*NO) TEXT($(REPO_TEXT))"
+	@touch $@
+
+
+%.lgcfile: %.lf
+	-system -q "CRTSRCPF FILE($(BINLIB)/QDDSSRC) RCDLEN(112)"
+	system "CPYFRMSTMF FROMSTMF('./source/$*.lf') TOMBR('/QSYS.lib/$(BINLIB).lib/QDDSSRC.file/$*.mbr') MBROPT(*replace)"
+	system "CHGPFM FILE($(BINLIB)/QDDSSRC) MBR($*) SRCTYPE(LF)"
+	liblist -a $(LIBLIST);\
+	system "CRTLF FILE($(BINLIB)/$*) SRCFILE($(BINLIB)/QDDSSRC) SRCMBR($*) LVLCHK(*NO) TEXT($(REPO_TEXT))"
 	@touch $@
 
 
